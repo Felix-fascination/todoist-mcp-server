@@ -32,6 +32,18 @@ const CREATE_TASK_TOOL: Tool = {
         type: "number",
         description: "Task priority from 1 (normal) to 4 (urgent) (optional)",
         enum: [1, 2, 3, 4]
+      },
+      project_id: {
+        type: "string",
+        description: "ID of the project where the task should be created (optional)"
+      },
+      section_id: {
+        type: "string",
+        description: "ID of the section (column) within the project (optional)"
+      },
+      parent_id: {
+        type: "string",
+        description: "ID of the parent task to create a sub-task (optional)"
       }
     },
     required: ["content"]
@@ -61,6 +73,14 @@ const GET_TASKS_TOOL: Tool = {
         type: "number",
         description: "Maximum number of tasks to return (optional)",
         default: 10
+      },
+      section_id: {
+        type: "string",
+        description: "Filter tasks by section ID (optional)"
+      },
+      parent_id: {
+        type: "string",
+        description: "Filter tasks by parent ID (optional)"
       }
     }
   }
@@ -157,6 +177,9 @@ function isCreateTaskArgs(args: unknown): args is {
   description?: string;
   due_string?: string;
   priority?: number;
+  project_id?: string;
+  section_id?: string;
+  parent_id?: string;
 } {
   return (
     typeof args === "object" &&
@@ -171,6 +194,8 @@ function isGetTasksArgs(args: unknown): args is {
   filter?: string;
   priority?: number;
   limit?: number;
+  section_id?: string;
+  parent_id?: string;
 } {
   return (
     typeof args === "object" &&
@@ -236,7 +261,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: args.content,
         description: args.description,
         dueString: args.due_string,
-        priority: args.priority
+        priority: args.priority,
+        projectId: args.project_id,
+        sectionId: args.section_id,
+        parentId: args.parent_id
       });
       return {
         content: [{ 
@@ -260,8 +288,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (args.filter) {
         apiParams.filter = args.filter;
       }
+      if (args.section_id) {
+        apiParams.sectionId = args.section_id;
+      }
+      if (args.parent_id) {
+        apiParams.parentId = args.parent_id;
+      }
       // If no filters provided, default to showing all tasks
       const tasks = await todoistClient.getTasks(Object.keys(apiParams).length > 0 ? apiParams : undefined);
+
+      // Build lookup maps for project and section names
+      const projectMap: Record<string,string> = {};
+      const sectionMap: Record<string,string> = {};
+
+      try {
+        const [projects, sections] = await Promise.all([
+          todoistClient.getProjects(),
+          todoistClient.getSections()
+        ]);
+        projects.forEach(p => { projectMap[p.id] = p.name; });
+        sections.forEach(s => { sectionMap[s.id] = s.name; });
+      } catch(err) {
+        // ignore lookup errors, fallback to IDs only
+      }
 
       // Apply additional filters
       let filteredTasks = tasks;
@@ -274,9 +323,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         filteredTasks = filteredTasks.slice(0, args.limit);
       }
       
-      const taskList = filteredTasks.map(task => 
-        `- ${task.content}${task.description ? `\n  Description: ${task.description}` : ''}${task.due ? `\n  Due: ${task.due.string}` : ''}${task.priority ? `\n  Priority: ${task.priority}` : ''}`
-      ).join('\n\n');
+      const taskList = filteredTasks.map(task => {
+        const projName = projectMap[task.projectId] ? `${projectMap[task.projectId]} (${task.projectId})` : task.projectId;
+        const secName = task.sectionId ? (sectionMap[task.sectionId] || task.sectionId) : "";
+        return `- ${task.content}` +
+          (task.description ? `\n  Description: ${task.description}` : '') +
+          (task.due ? `\n  Due: ${task.due.string}` : '') +
+          (task.priority ? `\n  Priority: ${task.priority}` : '') +
+          `\n  Project: ${projName}` +
+          (secName ? `\n  Section: ${secName}` : '');
+      }).join('\n\n');
       
       return {
         content: [{ 
